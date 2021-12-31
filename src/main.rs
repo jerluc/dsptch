@@ -1,89 +1,48 @@
-mod clock;
-mod midi;
-mod ui;
+use pipewire::{self, prelude::*, properties, Context, MainLoop};
 
-use actix::{Actor, Addr, Context, Handler, Message, SyncArbiter, SyncContext, System};
-use std::io;
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mainloop = MainLoop::new().expect("Failed to create Pipewire Mainloop");
+    let context = Context::new(&mainloop).expect("Failed to create Pipewire Context");
+    let core = context
+        .connect(None)
+        .expect("Failed to connect to Pipewire Core");
+    let registry = core.get_registry().unwrap();
 
-use crate::clock::Clock;
-use crate::midi::Midi;
-use crate::ui::MainUI;
+    let output = core
+        .create_object::<pipewire::node::Node, _>(
+            "spa-node-factory",
+            &properties! {
+                *pipewire::keys::MEDIA_TYPE => "Midi",
+                *pipewire::keys::MEDIA_CATEGORY => "Playback",
+                *pipewire::keys::MEDIA_ROLE => "Production",
+            },
+        )
+        .expect("Failed to create object");
 
-#[derive(Debug, Copy, Clone, Message)]
-#[rtype(result = "()")]
-pub enum MidiEvent {
-    NoteOn(Instant, u8, u8, u8),
-    NoteOff(Instant, u8, u8, u8),
-}
+    let _listener = output
+        .add_listener_local()
+        .param(|_, _, _, _| println!("param()"))
+        .info(|node_info| println!("Node info: {:?}", node_info))
+        .register();
 
-pub struct MidiActor {
-    midi: Midi,
-}
+    // Register a callback to the `global` event on the registry, which notifies of any new global objects
+    // appearing on the remote.
+    // The callback will only get called as long as we keep the returned listener alive.
+    // let _listener = registry
+    //     .add_listener_local()
+    //     .global(|global| println!("New global: {:?}", global))
+    //     .register();
 
-impl Actor for MidiActor {
-    type Context = SyncContext<Self>;
-}
+    // let mut midi = pipewire::stream::Stream::new(
+    //     &core,
+    //     "dsptch_midi",
+    // )?;
 
-impl Handler<MidiEvent> for MidiActor {
-    type Result = <MidiEvent as Message>::Result;
-    fn handle(&mut self, msg: MidiEvent, _: &mut Self::Context) {
-        println!("Received MIDI message: {:?}", msg);
-        match msg {
-            MidiEvent::NoteOn(t, channel, note, velocity) => {
-                let dur = Instant::now().saturating_duration_since(t);
-                println!("[{} ms]", dur.as_millis());
-                self.midi
-                    .play_note(channel, note, velocity, Duration::from_millis(200));
-            }
-            _ => todo!(),
-        }
-    }
-}
+    // Calling the `destroy_global` method on the registry will destroy the object with the specified id on the remote.
+    // We don't have a specific object to destroy now, so this is commented out.
+    // registry.destroy_global(313).into_result()?;
 
-#[derive(Debug, Copy, Clone, Message)]
-#[rtype(result = "()")]
-pub enum TimelineEvent {
-    Play,
-    Pause,
-    Stop,
-    Reset,
-}
+    mainloop.run();
 
-pub struct TimelineActor {
-    output: Box<Addr<MidiActor>>,
-}
-
-impl Actor for TimelineActor {
-    type Context = Context<Self>;
-}
-
-impl Handler<TimelineEvent> for TimelineActor {
-    type Result = <TimelineEvent as Message>::Result;
-    fn handle(&mut self, msg: TimelineEvent, _ctx: &mut Self::Context) {
-        match msg {
-            TimelineEvent::Play => {
-                let t = Instant::now();
-                self.output.do_send(MidiEvent::NoteOn(t, 0, 60, 100));
-                thread::sleep(Duration::from_millis(250));
-            }
-            TimelineEvent::Stop => {}
-            _ => todo!(),
-        }
-    }
-}
-
-fn main() -> io::Result<()> {
-    let system = System::new();
-
-    let clock = SyncArbiter::start(1, move || Clock::new(120));
-
-    thread::spawn(move || {
-        let ui = MainUI::new();
-        ui.start(Arc::new(clock.clone()));
-    });
-
-    system.run()
+    Ok(())
 }
